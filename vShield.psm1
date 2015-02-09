@@ -1,126 +1,294 @@
-﻿#requires -version 2.0
+﻿Function Connect-vShieldServer {
+	<#
+		.SYNOPSIS
+			Connects to a vShield Manager Server.
 
-Function Get-vShieldAPI ($URL) {
-	$httpClient = [System.Net.WebRequest]::Create($URL)
+		.DESCRIPTION
+			Connects to a vShield Manager Server. The cmdlet starts a new session with a vShield Manager Server using the specified parameters.
 
-	# Add Authorization headers
-	$authbytes = [System.Text.Encoding]::ASCII.GetBytes($username + ":" + $password)
-	$base64 = [System.Convert]::ToBase64String($authbytes)  
-	$authorization = "Authorization: Basic " + $base64
-	$httpClient.Headers.Add($authorization)
+		.PARAMETER  Server
+			Specify the IP address or the DNS name of the vSphere server to which you want to connect.
 
-	# Set Method
-	$httpClient.Method = "GET"
-	$response = $httpClient.GetResponse()
-	If ($response.StatusCode -eq "OK") {
-		$reader = New-Object System.IO.StreamReader($response.GetResponseStream())
-		[xml]$XML = $reader.ReadToEnd()
-		$XML
-	} Else {
-		Write-Host -ForegroundColor Red "Unable to connect to $($URL), debug info:"
-		$response
-	}
-}
-Function Set-vShieldAPI ($URL) {
-	$httpClient = [System.Net.WebRequest]::Create($URL)
+		.PARAMETER  Username
+			Specify the user name you want to use for authenticating with the server. 
 
-	# Add Authorization headers
-	$authbytes = [System.Text.Encoding]::ASCII.GetBytes($username + ":" + $password)
-	$base64 = [System.Convert]::ToBase64String($authbytes)  
-	$authorization = "Authorization: Basic " + $base64
-	$httpClient.Headers.Add($authorization)
-
-	# Set Method
-	$httpClient.Method = "PUT"
-	$response = $httpClient.GetResponse()
-	If ($response.StatusCode -eq "OK") {
-		"Update task completed successfully"
-	} Else {
-		Write-Host -ForegroundColor Red "Unable to connect to $($URL), debug info:"
-		$response
-	}
-}
-Function Remove-vShieldAPI ($URL) {
-	$httpClient = [System.Net.WebRequest]::Create($URL)
-
-	# Add Authorization headers
-	$authbytes = [System.Text.Encoding]::ASCII.GetBytes($username + ":" + $password)
-	$base64 = [System.Convert]::ToBase64String($authbytes)  
-	$authorization = "Authorization: Basic " + $base64
-	$httpClient.Headers.Add($authorization)
-
-	# Set Method
-	$httpClient.Method = "DELETE"
-	$response = $httpClient.GetResponse()
-	If ($response.StatusCode -eq "OK") {
-		"Update task completed successfully"
-	} Else {
-		Write-Host -ForegroundColor Red "Unable to connect to $($URL), debug info:"
-		$response
-	}
-}
-function Get-VIType{
-    [cmdletbinding()]
-    param(
-    [parameter(ValueFromPipeline=$true)]
-    [VMware.Vim.ManagedObjectReference]
-    $MoRef)
-
-    process{
-        $leaf = Get-View $MoRef
-        if($leaf.ChildEntity){
-            $leaf.ChildEntity | Get-VIType
-        }
-        if($leaf.HostFolder){
-            $leaf.HostFolder | Get-VIType
-        }
-        if($leaf.VMFolder){
-            $leaf.VMFolder | Get-VIType
-        }
-        if($leaf.NetworkFolder){
-            $leaf.NetworkFolder | Get-VIType
-        }
-        if($leaf.DatastoreFolder){
-            $leaf.DatastoreFolder | Get-VIType
-        }
-        if($leaf.Host -and $leaf.Host[0].GetType().Name -ne "DatastoreHostMount"){
-            $leaf.Host | Get-VIType
-        }
-
-        $leaf.MoRef.Type
-    }
-}
-
-Function Get-vShieldService ($VMHost) {
-	$MoRef = ($VMHost.Id).trim("HostSystem-")
-	$XML = Get-vShieldAPI -URL "https://$vShieldIP/api/1.0/vshield/$MoRef"
-	$XML.vShieldConfiguration.InstallStatus | Select -ExpandProperty InstalledServices
-}
-Function Get-vShieldSecurityGroup ($Datacenter) {
-	$MoRef = ($Datacenter.Id).trim("Datacenter-")
-	$XML = Get-vShieldAPI -URL "https://$vShieldIP/api/2.0/services/securitygroup/scope/$MoRef"
-	$XML.list.securitygroup | Foreach {
-		$AllInfo = New-Object -TypeName PSObject -Property @{
-			ID = $_.objectId
-			Name = $_.name
-			Member = $_.member | Select -ExpandProperty Name
+		.PARAMETER  Password
+			Specifies the password you want to use for authenticating with the server.
+			
+		.EXAMPLE
+			PS C:\> Connect-vShieldServer -server "192.168.0.88" -username "admin" -password "default"
+	#>
+	[CmdletBinding()]
+	Param (
+		[Parameter(ValueFromPipeline=$true)]
+		$Server,
+		$Username,
+		$Password
+	)
+	process {
+		
+		if ($Global:DefaultvShieldServer) {
+			return		
 		}
-		$AllInfo
+		$httpClient = [System.Net.WebRequest]::Create("https://$server/api/2.0/global/heartbeat")
+		
+		$authbytes = [System.Text.Encoding]::ASCII.GetBytes($username + ":" + $password)
+		$base64 = [System.Convert]::ToBase64String($authbytes)  
+		$authorization = "Authorization: Basic " + $base64
+		$httpClient.Headers.Add($authorization)
+		
+		$httpClient.Method = "GET"
+		$response = $httpClient.GetResponse()
+		If ($response.StatusCode -eq "OK") {
+			$Global:DefaultvShieldServer = New-Object -TypeName PSObject -Property @{
+				Name = $Server
+				ServerUri = "https://$server/"
+				Authorization = $authorization
+			}
+		Write-Host -ForegroundColor Yellow "Connected Successfully to $Server"
+		} Else {
+			Throw "Unable to connect to $Server, debug info:"
+			Throw $response
+		} 
 	}
 }
-Function Set-vShieldSecurityGroup ($Add, $Remove, $Datacenter, $SecurityGroup, $VM) {
+Function Invoke-RestAPI {
+		<#
+		.SYNOPSIS
+			Invokes a restfull API.
+
+		.DESCRIPTION
+			Connects to a restfull API and returns data.
+
+		.PARAMETER  URL
+			Specify the URL to use when accessing the rest api.
+
+		.PARAMETER  Get
+			Specifies that you will be using the GET Method 
+
+		.PARAMETER  Put
+			Specifies that you will be using the PUT Method 
+			
+		.PARAMETER  Delete
+			Specifies that you will be using the DELETE Method 
+		
+		.PARAMETER  Post
+			Specifies that you will be using posting data 
+		
+		.PARAMETER  Data
+			Specifies the data you will be using in a post method
+		
+		.EXAMPLE
+			PS C:\> Invoke-RestAPI -Get -URL "https://192.168.0.88/api/2.0/app/firewall/protocols"
+	#>
+	Param (
+		$URI,
+		[System.Management.Automation.SwitchParameter]$Get,
+		[System.Management.Automation.SwitchParameter]$Put,
+		[System.Management.Automation.SwitchParameter]$Delete,
+		[System.Management.Automation.SwitchParameter]$Post,
+		$Data
+	)
+	process {
+		if ((-not $Get) -and (-not $Put) -and (-not $Delete) -and (-not $Post)){
+			Throw "No Method used, please specify either Get, Put, Delete or Post"
+			return
+		}
+		if (-not $URI) {
+			Throw "No URI Specified"
+			return
+		}
+		if ($post) {
+			If (-not $data) {
+				Throw "You must use the -Data parameter when specifying the Post parameter"
+				return
+			}
+			$wc = New-Object System.Net.WebClient
+
+			# Add Authorization headers
+			$URL = ($Global:DefaultvShieldServer.ServerUri) + $URI
+			$wc.Headers.Add(($Global:DefaultvShieldServer.Authorization))
+			$wc.UploadString($URI, "POST", $data)
+			return
+		}
+		
+		
+		# Set Method
+		if ($Get) { $Method = "GET" }
+		if ($Put) { $Method = "PUT" }
+		if ($Delete) { $Method = "DELETE" }
+		
+		$httpClient = [System.Net.WebRequest]::Create($URI)
+		# Add Authorization headers
+		$httpClient.Headers.Add($Global:DefaultvShieldServer.Authorization)
+		$httpClient.Method = $Method
+		$response = $httpClient.GetResponse()	
+		If ($Get) {
+			If ($response.StatusCode -eq "OK") {
+				$reader = New-Object System.IO.StreamReader($response.GetResponseStream())
+				[xml]$XML = $reader.ReadToEnd()
+				$Global:DebugXML = $XML
+				$XML
+				return
+			} Else {
+				Throw "Unable to connect to $($URI)"
+				return
+			}
+		}
+	}
+}
+Function Get-vShieldCommand {
+	Get-Command -Module vShield
+}
+Function Get-vShieldService {
+	<#
+		.SYNOPSIS
+			Lists the status of installed vShield services.
+
+		.DESCRIPTION
+			Lists the status of installed vShield services.
+
+		.PARAMETER  VMHost
+			The VMHost object to check.
+
+		.EXAMPLE
+			Get-vShieldService
+
+		.EXAMPLE
+			Get-vShieldService -VMHost (Get-VMHost virtuesx1*)
+	#>
+	Param (
+		$VMHost
+	) 
+	
+	PROCESS {
+		if (-not $VMHost) {
+			$VMHost = Get-VMHost 
+		}
+		Foreach ($VMH in $VMHost) {
+			$MoRef = ($VMH.Id).trim("HostSystem-")
+			$XML = Invoke-RestAPI -Get -URI "$($DefaultvShieldServer.ServerURI)api/1.0/vshield/$MoRef"
+			$XML.vShieldConfiguration.InstallStatus | Foreach {	
+				$Status = New-Object -TypeName PSObject -Property @{
+					VMHost = $VMH.Name
+					Progress = $null
+					ProgressInfo = $null
+					vShieldAppInstalled = $false
+					vShieldEndPointInstalled = $false
+				}
+				If ($_.ProgressState) {
+					$Status.Progress = $_.ProgressState
+					$Status.ProgressInfo = $_.ProgressSubState
+				}
+				If ($_.InstalledServices) {
+					$Status.vShieldAppInstalled = $_.InstalledServices.VszInstalled
+					$Status.vShieldEndPointInstalled = $_.InstalledServices.EpsecInstalled
+				}
+				$Status
+			}
+		}
+	}
+}
+Function Get-vShieldSecurityGroup {
+	<#
+		.SYNOPSIS
+			Lists all security groups and members.
+
+		.DESCRIPTION
+			Lists all security groups and members.
+
+		.PARAMETER  Datacenter
+			The Datacenter which contains the security groups.
+
+		.EXAMPLE
+			Get-vShieldSecurityGroup
+
+		.EXAMPLE
+			Get-vShieldSecurityGroup -Datacenter (Get-Datacenter London)
+	#>
+	Param (
+		$Datacenter
+	)
+	If (-Not $Datacenter) {
+		$Datacenter = Get-Datacenter 
+	}
+	Foreach ($DC in $Datacenter) {
+		$MoRef = ($DC.Id).trim("Datacenter-")
+		$XML = Invoke-RestAPI -Get -URI "$($DefaultvShieldServer.ServerURI)api/2.0/services/securitygroup/scope/$MoRef"
+		If ($XML.list.length -eq 0) { return }
+		$XML.list.securitygroup | Foreach {
+			$AllInfo = New-Object -TypeName PSObject -Property @{
+				ID = $_.objectId
+				Datacenter = $DC.Name
+				Name = $_.name
+				Description = $_.description
+				Member = $_.member | Select Name, ObjectTypeName, ObjectID
+			}
+			$AllInfo
+		}
+	}
+}
+Function Set-vShieldSecurityGroup {
+	<#
+		.SYNOPSIS
+			Ammends security groups.
+
+		.DESCRIPTION
+			Ammends security groups, currently only setup to use with security groups
+			at a datacenter level and only to add/remove VMs only.
+
+		.PARAMETER  Add
+			Use this paramater to add the VM to the group.
+			
+		.PARAMETER  Remove
+			Use this paramater to Remove the VM to the group.
+		
+		.PARAMETER  Datacenter
+			The Datacenter which contains the security group.
+
+		.PARAMETER  SecurityGroup
+			The Name of the Security Group.
+
+		.PARAMETER  VM
+			The VM to Add/Remove to the Security Group.
+
+		.EXAMPLE
+			Set-vShieldSecurityGroup -Add -Datacenter (Get-Datacenter Virtu-Al) -SecurityGroup "View Servers and Clients" -VM (Get-VM View01)
+
+		.EXAMPLE
+			Set-vShieldSecurityGroup -Remove -Datacenter (Get-Datacenter Virtu-Al) -SecurityGroup "View Servers and Clients" -VM (Get-VM View01)
+
+	#>
+	Param (
+		[System.Management.Automation.SwitchParameter]$Add, 
+		[System.Management.Automation.SwitchParameter]$Remove, 
+		$Datacenter, 
+		$SecurityGroup, 
+		$VM
+	)
 	$VMMoRef = ($VM.Id).trim("VirtualMachine-")
 	$SGId = (Get-vShieldSecurityGroup -datacenter ($Datacenter) | Where {$_.name -eq $SecurityGroup}).id
 	If ($Add) {
-		$SetSG = Set-vShieldAPI -URL "https://$vShieldIP/api/2.0/services/securitygroup/$SGId/members/$VMMoRef"
+		$SetSG = Invoke-RestAPI -Put -URI "$($DefaultvShieldServer.ServerURI)api/2.0/services/securitygroup/$SGId/members/$VMMoRef"
 	} Else {
-		$SetSG = Remove-vShieldAPI -URL "https://$vShieldIP/api/2.0/services/securitygroup/$SGId/members/$VMMoRef"
+		$SetSG = Invoke-RestAPI -Delete -URI "$($DefaultvShieldServer.ServerURI)api/2.0/services/securitygroup/$SGId/members/$VMMoRef"
 	}
 	Get-vShieldSecurityGroup -datacenter ($Datacenter) | Where {$_.name -eq $SecurityGroup}
 }
 
 Function Get-vSDSScanStatus {
-	$XML = Get-vShieldAPI -URL "https://$vShieldIP/api/2.0/dlp/scanstatus"
+	<#
+		.SYNOPSIS
+			Lists the Data Security Status.
+
+		.DESCRIPTION
+			Lists the Data Security Status.
+
+		.EXAMPLE
+			Get-vSDSScanStatus
+
+	#>
+	$XML = Invoke-RestAPI -Get -URI "$($DefaultvShieldServer.ServerURI)api/2.0/dlp/scanstatus"
 	$XML.DlpScanStatus	| Foreach {	
 		$Status = New-Object -TypeName PSObject -Property @{
 			Status = $_.currentScanState
@@ -131,310 +299,280 @@ Function Get-vSDSScanStatus {
 	}
 }
 Function Get-vSDSPolicy {
-	$XML = Get-vShieldAPI -URL "https://$vShieldIP/api/2.0/dlp/policy/saved"
+	<#
+		.SYNOPSIS
+			Lists the Policies currently setup.
+
+		.DESCRIPTION
+			Lists the Data Security policies.
+
+		.EXAMPLE
+			Get-vSDSPolicy
+
+	#>
+	$XML = Invoke-RestAPI -Get -URI "$($DefaultvShieldServer.ServerURI)api/2.0/dlp/policy/saved"
 	$XML.DlpPolicy
 }
 Function Get-vSDSRegulation {
-	$XML = Get-vShieldAPI -URL "https://$vShieldIP/api/2.0/dlp/regulation"
+	<#
+		.SYNOPSIS
+			Lists the Data security Regulations available.
+
+		.DESCRIPTION
+			Lists the Data Security Regulations available.
+			
+		.EXAMPLE
+		Get-vSDSRegulation
+
+	#>
+	$XML = Invoke-RestAPI -Get -URI "$($DefaultvShieldServer.ServerURI)api/2.0/dlp/regulation"
 	$XML.set | Select -ExpandProperty Regulation
 }
-Function Get-vSDSViolationCount ($Datacenter, $VMHost) {
-	If ($Datacenter) {
-		$MoRef = ($Datacenter.Id).trim("Datacenter-")
-	}
-	If ($VMHost) {
-		$MoRef = ($VMHost.Id).trim("HostSystem-")
-	}
-	$XML = Get-vShieldAPI -URL "https://$vShieldIP/api/2.0/dlp/violations/$MoRef"
-	$XML.list.Violations | Foreach {
-		$Vio = New-Object -TypeName PSObject -Property @{
-			RegulationViolated = $_.regulation.name
-			Count = $_.violationCount
+Function Get-vSDSViolationCount {
+	<#
+		.SYNOPSIS
+			Lists the Data security violation counts.
+
+		.DESCRIPTION
+			Lists the Data Security violation counts.
+
+		.EXAMPLE
+			Get-vSDSViolationCount
+			
+		.PARAMETER  Datacenter
+			The Datacenter which to gather information from.
+
+	#>
+	Param (
+		$Datacenter
+	)
+	Process {
+		If (-not $Datacenter) {
+			$Datacenter = Get-Datacenter
 		}
-		$Vio
+		Foreach ($DC in $Datacenter) {
+			$MoRef = ($DC.Id).trim("Datacenter-")
+			$XML = Invoke-RestAPI -Get -URI "$($DefaultvShieldServer.ServerURI)api/2.0/dlp/violations/$MoRef"
+			$XML.list.Violations | Foreach {
+				$Vio = New-Object -TypeName PSObject -Property @{
+					Datacenter = $DC.Name
+					RegulationViolated = $_.regulation.name
+					Count = $_.violationCount
+				}
+				$Vio
+			}
+		}
 	}
 }
-Function Get-vSDSViolationFile ($Datacenter, $VMHost) {
-	If ($Datacenter) {
-		$MoRef = ($Datacenter.Id).trim("Datacenter-")
-	}
-	If ($VMHost) {
-		$MoRef = ($VMHost.Id).trim("HostSystem-")
-	}
-	$XML = Get-vShieldAPI -URL "https://$vShieldIP/api/2.0/dlp/violatingfiles/$($MoRef)?pagesize=5000&startindex=0"
-	$XML.ViolatingFiles.dataPage.ViolatingFile | Foreach {
-		$AllInfo = New-Object -TypeName PSObject -Property @{
-			ID = $_.identifier
-			DatacenterName = $_.dataCenter.name
-			ClusterName = $_.cluster.name
-			VM = $_.vm.name
-			FileName = $_.fileName
-			MatchedRegulations = $_.violations.ViolationInfo | Foreach { $_.regulation.name }
-			LastModified = $_.fileLastModifiedTime.InnerXml
-			ViolationLastDetected = $_.violations.ViolationInfo | Foreach { $_.lastViolationReportedTime.InnerXml }
+Function Get-vSDSViolationFile {
+	<#
+		.SYNOPSIS
+			Lists the Data security violation files.
+
+		.DESCRIPTION
+			Lists the Data Security violation files.
+
+		.PARAMETER  Datacenter
+			The Datacenter which to gather information from.
+			
+		.EXAMPLE
+			Get-vSDSViolationFile
+
+	#>
+	Param (
+		$Datacenter
+	)
+	Process {
+		If (-not $Datacenter) {
+			$Datacenter = Get-Datacenter
 		}
-		$AllInfo
+		Foreach ($DC in $Datacenter) {
+			$MoRef = ($DC.Id).trim("Datacenter-")
+			$XML = Invoke-RestAPI -Get -URI "$($DefaultvShieldServer.ServerURI)api/2.0/dlp/violatingfiles/$($MoRef)?pagesize=5000&startindex=0"
+			$XML.ViolatingFiles.dataPage.ViolatingFile | Foreach {
+				$AllInfo = New-Object -TypeName PSObject -Property @{
+					ID = $_.identifier
+					DatacenterName = $_.dataCenter.name
+					ClusterName = $_.cluster.name
+					VM = $_.vm.name
+					FileName = $_.fileName
+					MatchedRegulations = $_.violations.ViolationInfo | Foreach { $_.regulation.name }
+					LastModified = $_.fileLastModifiedTime.InnerXml
+					ViolationLastDetected = $_.violations.ViolationInfo | Foreach { $_.lastViolationReportedTime.InnerXml }
+				}
+				$AllInfo
+			}
+		}
 	}
 }
 Function Get-vSDSEvents {
-	Get-VIEvent | Where { $_.FullFormattedMessage -like "SDD *"}
+	<#
+		.SYNOPSIS
+			Lists the Data security events in vCenter.
+
+		.DESCRIPTION
+			Lists the Data Security events in vCenter for all objects
+			or for a given VM.
+
+		.PARAMETER  VM
+			The VM to find events for.
+			
+		.EXAMPLE
+			Get-vSDSEvents
+
+	#>
+	Process {
+		If ($VM) {
+			$VM | Get-VIEvent | Where { $_.FullFormattedMessage -like "vShield Data Security *"}
+		} Else {
+			Get-VIEvent | Where { $_.FullFormattedMessage -like "vShield Data Security *"}
+		}
+	}
 }
 
-Function Get-vSAppStatus ($Datacenter) {
-	$MoRef = ($Datacenter.Id).trim("Datacenter-")
-	$XML = Get-vShieldAPI -URL "https://$vShieldIP/api/2.0/app/firewall/$($MoRef)/state"
-	$XML.VshieldAppConfiguration.datacenterState | Foreach {
-		$AllInfo = New-Object -TypeName PSObject -Property @{
-			ID = $_.datacenterId
-			Name = $Datacenter.name
-			Status = $_.status
+Function Get-vSAppStatus {
+	<#
+		.SYNOPSIS
+			Lists the Status of vShield App for a datacenter.
+
+		.DESCRIPTION
+			Lists the Status of vShield App for a datacenter.
+
+		.PARAMETER  Datacenter
+			The Datacenter which to gather information from.
+			
+		.EXAMPLE
+			Get-vSAppStatus
+		
+		.EXAMPLE
+			Get-vSAppStatus -Datacenter (Get-Datacenter Virtu-Al)
+
+	#>
+	Param ($Datacenter)
+	Process {
+		If (-not $Datacenter) {
+			$Datacenter = Get-Datacenter
 		}
-		$AllInfo
+		Foreach ($DC in $Datacenter) {
+			$MoRef = ($DC.Id).trim("Datacenter-")
+			$XML = Invoke-RestAPI -Get -URI "$($DefaultvShieldServer.ServerURI)api/2.0/app/firewall/$($MoRef)/state"
+			$XML.VshieldAppConfiguration.datacenterState | Foreach {
+				$AllInfo = New-Object -TypeName PSObject -Property @{
+					ID = $_.datacenterId
+					Name = $DC.name
+					Status = $_.status
+				}
+				$AllInfo
+			}
+		}
 	}
 }
 Function Get-vSAppProtocol {
-	$XML = Get-vShieldAPI -URL "https://$vShieldIP/api/2.0/app/firewall/protocols"
-	$XML.VshieldAppConfiguration.protocolTypes
-}
-Function Get-vSAppApplication {
-	$XML = Get-vShieldAPI -URL "https://$vShieldIP/api/2.0/app/firewall/protocols/application"
-	$XML.VshieldAppConfiguration.protocolsList.protocol
-}
-Function Get-vSAppProtocolEthernet {
-	$XML = Get-vShieldAPI -URL "https://$vShieldIP/api/2.0/app/firewall/protocols/ethernet"
-	$XML.VshieldAppConfiguration.protocolsList.protocol | Foreach {
-		$Obj = New-Object -TypeName PSObject -Property @{
-			Layer = "Layer2"
-			Type = "ethernet"
-			Protocol = $_.Name
-			Value = $_.Value
-		}
-		$Obj
+	<#
+		.SYNOPSIS
+			Lists the protocols available.
+
+		.DESCRIPTION
+			Lists the protocols available.
+			
+		.EXAMPLE
+			Get-vSAppProtocol
+
+	#>
+	Process {
+		$XML = Invoke-RestAPI -Get -URI "$($DefaultvShieldServer.ServerURI)api/2.0/app/firewall/protocols"
+		$XML.VshieldAppConfiguration.protocolTypes
 	}
 }
-Function Get-vSAppProtocolIPv4 {
-	$XML = Get-vShieldAPI -URL "https://$vShieldIP/api/2.0/app/firewall/protocols/ipv4"
-	$XML.VshieldAppConfiguration.protocolsList.protocol | Foreach {
-		$Obj = New-Object -TypeName PSObject -Property @{
-			Layer = "Layer3"
-			Type = "ipv4"
-			Protocol = $_.Name
-			Value = $_.Value
+Function Get-vSAppProtocolType {
+	<#
+		.SYNOPSIS
+			Lists the Protocol Type available.
+
+		.DESCRIPTION
+			Lists the Protocol Type available.
+			
+		.EXAMPLE
+			Get-vSAppProtocolType
+
+	#>
+	Process {
+		$XML = Invoke-RestAPI -Get -URI "$($DefaultvShieldServer.ServerURI)api/2.0/app/firewall/protocols/application"
+		$XML.VshieldAppConfiguration.protocolsList.protocol
+	}
+}
+Function Get-vSAppProtocolEthernet {
+	<#
+		.SYNOPSIS
+			Lists the Ethernet Protocols.
+
+		.DESCRIPTION
+			Lists the Ethernet Protocols.
+			
+		.EXAMPLE
+			Get-vSAppProtocolEthernet
+
+	#>
+	Process {
+		$XML = Invoke-RestAPI -Get -URI "$($DefaultvShieldServer.ServerURI)api/2.0/app/firewall/protocols/ethernet"
+		$XML.VshieldAppConfiguration.protocolsList.protocol | Foreach {
+			$Obj = New-Object -TypeName PSObject -Property @{
+				Layer = "Layer2"
+				Type = "ethernet"
+				Protocol = $_.Name
+				Value = $_.Value
+			}
+			$Obj
 		}
-		$Obj
+	}
+}
+Function Get-vSAppProtocolIPv4  {
+	<#
+		.SYNOPSIS
+			Lists the IPv4 Protocols.
+
+		.DESCRIPTION
+			Lists the IPv4 Protocols.
+			
+		.EXAMPLE
+			Get-vSAppProtocolIPv4
+
+	#>
+	Process {
+		$XML = Invoke-RestAPI -Get -URI "$($DefaultvShieldServer.ServerURI)api/2.0/app/firewall/protocols/ipv4"
+		$XML.VshieldAppConfiguration.protocolsList.protocol | Foreach {
+			$Obj = New-Object -TypeName PSObject -Property @{
+				Layer = "Layer3"
+				Type = "ipv4"
+				Protocol = $_.Name
+				Value = $_.Value
+			}
+			$Obj
+		}
 	}
 }
 Function Get-vSAppProtocolICMP {
-	$XML = Get-vShieldAPI -URL "https://$vShieldIP/api/2.0/app/firewall/protocols/icmp"
-	$XML.VshieldAppConfiguration.protocolsList.protocol | Foreach {
-		$Obj = New-Object -TypeName PSObject -Property @{
-			Layer = "Layer3"
-			Type = "icmp"
-			Protocol = $_.Name
-			Value = $_.Value
+	<#
+		.SYNOPSIS
+			Lists the ICMP Protocols.
+
+		.DESCRIPTION
+			Lists the ICMP Protocols.
+			
+		.EXAMPLE
+			Get-vSAppProtocolICMP
+
+	#>
+	Process {
+		$XML = Invoke-RestAPI -Get -URI "$($DefaultvShieldServer.ServerURI)api/2.0/app/firewall/protocols/icmp"
+		$XML.VshieldAppConfiguration.protocolsList.protocol | Foreach {
+			$Obj = New-Object -TypeName PSObject -Property @{
+				Layer = "Layer3"
+				Type = "icmp"
+				Protocol = $_.Name
+				Value = $_.Value
+			}
+			$Obj
 		}
-		$Obj
 	}
 }
-Function Get-vSAppAllProtocol {
-	$All = @()
-	$XML = Get-vShieldAPI -URL "https://$vShieldIP/api/2.0/app/firewall/protocols/icmp"
-	$XML.VshieldAppConfiguration.protocolsList.protocol | Foreach {
-		$Obj = New-Object -TypeName PSObject -Property @{
-			Layer = "Layer3"
-			Type = "icmp"
-			Protocol = $_.Name
-			Value = $_.Value
-		}
-		$All += $Obj
-	}
-	$XML = Get-vShieldAPI -URL "https://$vShieldIP/api/2.0/app/firewall/protocols/ipv4"
-	$XML.VshieldAppConfiguration.protocolsList.protocol | Foreach {
-		$Obj = New-Object -TypeName PSObject -Property @{
-			Layer = "Layer3"
-			Type = "ipv4"
-			Protocol = $_.Name
-			Value = $_.Value
-		}
-		$All += $Obj
-	}
-	$XML = Get-vShieldAPI -URL "https://$vShieldIP/api/2.0/app/firewall/protocols/ethernet"
-	$XML.VshieldAppConfiguration.protocolsList.protocol | Foreach {
-		$Obj = New-Object -TypeName PSObject -Property @{
-			Layer = "Layer2"
-			Type = "ethernet"
-			Protocol = $_.Name
-			Value = $_.Value
-		}
-		$All += $Obj
-	}
-	$All | Sort Layer
-}
-Function Get-vSAppApplicationInfo ($ID) {
-	$XML = Get-vShieldAPI -URL "https://$vShieldIP/api/2.0/services/application/$($ID)"
-	$XML.application | Foreach {
-		$Obj = New-Object -TypeName PSObject -Property @{
-			ID = $_.objectID
-			Name = $_.Name
-			Type = $_.objectTypeName
-		}
-		$Obj
-	}
-}
-Function Get-vCenterObject ($ID, $Datacenter){
-	# The complete vCenter
-	# $si = Get-View ServiceInstance
-	# Get-VIType -MoRef $si.Content.RootFolder | Sort-Object -Unique
-
-	# From a specific datacenter
-	If (-not $Types) {	
-		$Types = Get-VIType -MoRef $Datacenter.Extensiondata.MoRef | Sort-Object -Unique
-	}
-
-	$count = 0
-	$Total = $Types.Count
-	do {
-		$Match = Get-View "$($Types[$count])-$ID" -ErrorAction SilentlyContinue
-		$count++
-	} until (($count -eq $Total) -or ($Match))
-
-	$Match.Name
-}
-Function Get-vSAppFirewall ($Datacenter, $Cluster) {
-	If ($Datacenter) {
-		$MoRef = ($Datacenter.Id).trim("Datacenter-")
-	}
-	If ($Cluster) {
-		$MoRef = ($VMHost.Id).trim("HostSystem-")
-	}
-	$XML = Get-vShieldAPI -URL "https://$vShieldIP/api/2.0/app/firewall/$MoRef/config?list=config"
-	$XML.VshieldAppConfiguration.firewallConfiguration.layer3firewallrule | Where {$_.destination.address.containerId } | Foreach {
-		if ($_.disabled -eq "false"){
-			$Enabled = $true
-		} Else {
-			$Enabled = $false
-		}
-		if ($_.logged -eq "false"){
-			$Logged = $false
-		} Else {
-			$Logged = $true
-		}
-		$AllInfo = New-Object -TypeName PSObject -Property @{
-			ID = $_.id
-			Layer = "Layer 3"
-			Source = (Get-vCenterObject -ID $_.source.address.containerId -datacenter $Datacenter)
-			SourceID = $_.source.address.containerId
-			Destination = (Get-vCenterObject -ID $_.destination.address.containerId -datacenter $Datacenter)
-			DestinationID = $_.destination.address.containerId
-			ApplicationProtocolsPorts = (Get-vSAppApplicationInfo -ID $_.destination.application.applicationSetId).Name
-			Action = $_.action
-			Logging = $Logged
-			Enabled = $Enabled
-			Notes = $_.notes
-		}
-		$AllInfo
-	}
-}
-Function Get-vSAppApplication ($Datacenter) {
-	$MoRef = ($Datacenter.Id).trim("Datacenter-")
-	$XML = Get-vShieldAPI -URL "https://$vShieldIP/api/2.0/services/application/scope/$($MoRef)"
-	$XML.list.application | Foreach {
-		$Obj = New-Object -TypeName PSObject -Property @{
-			ID = $_.objectId
-			Name = $_.Name
-			Type = $_.objectTypeName
-		}
-		$Obj
-	}
-}
-
-#$username = "admin"
-#$password = "default"
-#$vshieldIP = "192.168.0.88"
-
-
-#Connect-VIServer 192.168.0.11 -User Administrator -Password Ra1nb0w
-
-#$SecurityGroups = Get-vShieldSecurityGroup (Get-Datacenter London)
-
-#Write-Host -ForegroundColor Yellow "vShield Security Groups:"
-#$SecurityGroups
-
-#Foreach ($Group in $SecurityGroups) {
-#	if ($Group.Member) {
-#		Write-Host -ForegroundColor Yellow "VM Objects for $($Group.Name)"
-#		$Group.Member | Foreach {
-#			$VMName = $_.Name
-#			Get-VM $VMName | Select Name, VMHost
-#		}
-#	}
-#}
-
-#Write-Host -ForegroundColor Yellow "Data Security Scan Status:"
-#Get-vSDSScanStatus
-
-#Write-Host -ForegroundColor Yellow "Data Security Policys:"
-#Get-vSDSPolicy
-
-#Write-Host -ForegroundColor Yellow "Data Security Policy Regulations:"
-#Get-vSDSPolicy | Select -ExpandProperty Regulations
-
-#Write-Host -ForegroundColor Yellow "All Regulations"
-#Get-vSDSRegulation
-
-#Write-Host -ForegroundColor Yellow "Data Security Violation Count"
-#Get-vSDSViolationCount -Datacenter (Get-Datacenter London)
-
-#Add Multiple VMs to a Security Group
-#$VMObjects = Get-VM "VM*"
-#$Datacenter = Get-Datacenter London
-#$VMObjects | Foreach {
-#	Set-vShieldSecurityGroup -Add $true -Datacenter $Datacenter -SecurityGroup "PCI Uncompliant" -VM $_
-#}
-
-#Removing Multiple VMS from a Security Group
-#$VMObjects = Get-VM "VM*"
-#$Datacenter = Get-Datacenter London
-#$VMObjects | Foreach {
-#	Set-vShieldSecurityGroup -Remove $true -Datacenter $Datacenter -SecurityGroup "PCI Uncompliant" -VM $_
-#}
-
-#Get the status of vShield App
-#Get-vSAppStatus (Get-Datacenter London)
-
-#Start of Demo Script
-
-#Write-Host -ForegroundColor Yellow "Data Security Violation File"
-#$Violations = Get-vSDSViolationFile -Datacenter (Get-Datacenter London) | Sort-Object -property VM -Unique
-#
-#$SecurityGroups = Get-vShieldSecurityGroup (Get-Datacenter London)
-#
-#Foreach ($Violation in $Violations) {
-#	Write "$($violation.VM) has violated the following policies:"
-#	$Violation.MatchedRegulations | Foreach {
-#		"...$($_.regulation.name)"
-#		
-#	}
-#	Read-Host "Press any key to continue..."
-#	$SecurityGroups | Where { $_.Member -contains $Violation.VM } | Foreach {
-#		Write "$($violation.VM) is a member of vShield Security Group: $($_.Name)"
-#	}
-#	Read-Host "Press any key to continue..."
-#	$VMObject = Get-VM $Violation.VM
-#	Write "Moving $($violation.VM) into PCI Uncompliant security group..."
-#	$SG = Set-vShieldSecurityGroup -Datacenter (Get-Datacenter London) -SecurityGroup "PCI Uncompliant" -VM $VMObject
-#	
-#	Read-Host "Press any key to continue..."
-#	Write "PCI Uncompliant Group now contains:"
-#	$SG | Select -ExpandProperty Member
-#}
-#
-#$Violations = Get-vSDSViolationFile -Datacenter (Get-Datacenter London)
-#
-#Send-Gmail -From "ajw.renouf@gmail.com" -To "renoufa@vmware.com" -subj "Security Violated files" -body ($Violations | Out-String)
-
-#List all App Firewall rules
-#Get-vSAppFirewall -datacenter (Get-Datacenter London) 
-
-# List all Applications
-#Get-vSAppApplication -Datacenter (Get-Datacenter London)
